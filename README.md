@@ -7,4 +7,4 @@ The raw sequencing reads and meta data are deposited in the NCBI Short Read Arch
 # Citation
 If you use part of this script, please cite:
 
-Nepel, M., Mayer, V. E., and Woebken, D. Highly diverse bacterial communities in arboreal ants’ nesting space develop conjoined with ant colonies. (ready for submission)
+Nepel, M., Mayer, V. E., and Woebken, D. Highly diverse bacterial communities in arboreal ants’ nesting space develop conjoined with ant colonies. (submitted in Communications Biology)
