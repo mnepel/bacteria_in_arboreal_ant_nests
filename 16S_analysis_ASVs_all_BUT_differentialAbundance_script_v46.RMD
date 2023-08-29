@@ -1,0 +1,1635 @@
+---
+title: "Azteca-Cecropia 16S rRNA gene manuscript - ASV level"
+author: "Maximilian Nepel"
+date: "last updated August 2023"
+output: 
+  html_document:
+    toc: true
+    toc_float: yes
+comment: recently switched from OTUs to DADA2-inferred ASVs. Analysis scripts had been modified, but otu/OTU syntax was not replaced with asv/ASV.
+---
+
+```{r, warning=FALSE, message=FALSE}
+source("0_v01_common.R", chdir = TRUE) # runs the common.R file
+```
+
+# loaded libraries
+```{r}
+all.pkgs.loaded <- gsub("package:","", search()[grep("package:",search())])
+sessionInfo()$basePkgs
+pkgs.loaded <- all.pkgs.loaded[!all.pkgs.loaded %in% sessionInfo()$basePkgs]
+
+pkgs <- data.frame(matrix(ncol = 1,nrow = 0))
+  colnames(pkgs) <- c("Version")
+for (i in pkgs.loaded) {
+  pkgs[i,1] <- sessionInfo()$otherPkgs[[i]]$Version
+  }
+print(pkgs)
+```
+
+# all subsetted phyloseq datasets are saved as .RDS files and need to be loaded here
+```{r}
+## examples
+# physeq.Ep.mean.abs <- readRDS(file.path(RD_DIR, "ASVs.physeq.Ep.mean.abs.rds"))
+# physeq.p.norm <- readRDS(file.path(RD_DIR, "ASVs.physeq.p.norm.rds"))
+```
+
+## first glimpse on taxonomy
+```{r}
+(physeq4norm.ansys <- physeq.p.norm)
+
+# no. of OTUs
+nrow(tax_table(physeq4norm.ansys))
+
+# detected phyla
+length(unique(tax_table(physeq4norm.ansys)[,"Phylum"]))
+levels(as.factor(tax_table(physeq4norm.ansys)[,"Phylum"]))
+```
+
+# ###########################################################################
+# #################### analyses #############################################
+# ###########################################################################
+
+## 1. describe Fp = intial ant colony patches (IP) ###########################################
+```{r}
+(physeq4abs.ansys <- physeq.Fp.abs)
+(physeq4abs.ansys <- prune_taxa(taxa_sums(physeq4abs.ansys) > 0, physeq4abs.ansys))
+(physeq4norm.ansys <- physeq.Fp.norm)
+(physeq4norm.ansys <- prune_taxa(taxa_sums(physeq4norm.ansys) > 0, physeq4norm.ansys))
+plottitle <- "ASV.ds.Fp"
+
+table(get_variable(physeq4norm.ansys)$Ant)
+sum(table(get_variable(physeq4norm.ansys)$Ant))
+unique(paste0(get_variable(physeq4norm.ansys)$Tree))
+```
+
+### 1.1 alpha diversity- shannon
+```{r}
+plot_richness(physeq4abs.ansys, measures = c("Shannon"))
+
+### testing patch type alpha diversity for significance
+alpha <- get_variable(physeq4abs.ansys)
+alpha$Shannon <- estimate_richness(physeq4abs.ansys, measures = c("Shannon"))$Shannon
+
+(alpha.res <- kruskal.test(Shannon ~ Ant, data = alpha))
+(alpha.res.pw <- pairwise.wilcox.test(alpha$Shannon, alpha$Ant, p.adjust.method = "BH"))
+
+p <- ggplot(alpha, aes(Ant, Shannon))
+p + geom_boxplot(aes(fill = Ant), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  coord_cartesian(ylim = c(0.0, 6)) +
+  geom_jitter(color="darkblue", shape=16, position=position_jitter(0.2)) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.Fp.dots",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 5, dpi = 300)
+
+alpha.sub <- alpha[grep("alf", alpha$Ant),]
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("con", alpha$Ant),]
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("xan", alpha$Ant),]
+median(alpha.sub$Shannon)
+```
+
+### 1.2 beta diversity - PCoA
+```{r}
+bplot.obj <- capscale(otu_table(physeq4norm.ansys) ~ 1, distance = "bray")
+
+bplot.scores <- scores(bplot.obj)
+explained <- eigenvals( bplot.obj )/sum( eigenvals( bplot.obj ) ) * 100
+explained <- format( round( explained, 1 ), nsmall = 1 )
+
+bplot.df <- data.frame(id = row.names(bplot.scores$sites), bplot.scores$sites, Name = get_variable(physeq4norm.ansys)$Name, Type = get_variable(physeq4norm.ansys)$Type, Year = get_variable(physeq4norm.ansys)$Year, Ant = get_variable(physeq4norm.ansys)$Ant, Age = get_variable(physeq4norm.ansys)$Age, Tree = get_variable(physeq4norm.ansys)$TreeR)
+colnames(bplot.df)[c(2,3)] <- c("PC1", "PC2")
+
+p <- PlotOrd.single(bplot.df , components = c("PC1", "PC2"), groups = "Ant", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("PC 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("PC 2 (", explained[2], "%)", sep = ""))
+
+ggsave(paste(PLOTS_DIR,"/plot.PCoA.Fp.Ant",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 4, dpi = 300)
+```
+
+### 1.3 drivers
+
+#### 1.3.1 PERMANOVA - adonis2
+```{r}
+(m.Fp.Ant <- adonis2(otu_table(physeq4norm.ansys) ~ Ant, 
+                    data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+```
+
+### 1.4 community - bar charts
+
+#### 1.4.1 base for stacked bar charts
+```{r}
+OTU4tax <- as.data.frame(t(otu_table(physeq4norm.ansys)))
+  OTU4tax$Total <- rowSums(OTU4tax)
+  OTU4tax$OTU <- rownames(OTU4tax)
+dim(OTU4tax)
+
+Taxonomy2 <- cbind(physeq4norm.ansys@tax_table@.Data, OTU4tax) 
+Taxonomy2[,1:6] <- lapply(Taxonomy2[,1:6], as.factor)
+
+Taxonomy2 <- melt(Taxonomy2, id = c("OTU", "Total", "Domain", "Phylum", "Class", "Order", "Family", "Genus"), variable.name = 'Name', value.name = 'Freq', na.rm = TRUE) # --> jede OTU in jedem sample einen eintrag mit frequenz
+Taxonomy <- merge(Taxonomy2, get_variable(physeq4norm.ansys), by="Name")
+
+ab.Taxonomy.class <- TaxThresh(Taxonomy, tax.level = "Class", thresh = 0.5)
+ab.Taxonomy.order <- TaxThresh(Taxonomy, tax.level = "Order", thresh = 0.2)
+```
+
+#### 1.4.2 class taxonomy
+
+##### plot bar chart
+```{r}
+ab.Taxonomy <- ab.Taxonomy.class
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, Freq = ab.Taxonomy$Freq, Taxa = ab.Taxonomy$Class, Type = ab.Taxonomy$Type, Ant = ab.Taxonomy$Ant, Age = ab.Taxonomy$Age, Tree = ab.Taxonomy$TreeR)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Age", "Tree"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.Fp.class",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 4, dpi = 300)
+```
+
+##### get statistics
+```{r}
+head(unique(Taxonomy$Class))
+levels(factor(tax.data2plot$Taxa))
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="_")
+sum.class.taxSample <- aggregate(tax.data2plot$Rel.Ab, by=list(taxYZ=tax.data2plot$taxSample), FUN=sum)
+head(sum.class.taxSample)
+
+# get statistics min mean max
+sum.class2check <- sum.class.taxSample # sum.class.taxType
+split <- str_split_fixed(sum.class2check$taxYZ, "_", 2)
+sum.class.min.max.2 <- cbind(split,sum.class2check)
+colnames(sum.class.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.class.min.max.2["Taxa"] <- lapply(sum.class.min.max.2["Taxa"], as.factor)
+
+d6 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d6) <- c("Taxa","min","mean", "max") # per site
+for (k in 1:length(levels(sum.class.min.max.2$Taxa))) {
+  d6[k,1] <- levels(sum.class.min.max.2$Taxa)[[k]]
+  d6[k,2] <- min(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+  d6[k,3] <- round(mean(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+  d6[k,4] <- max(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+}
+  print(d6[order(d6[,3],decreasing = TRUE),])
+```
+
+#### 1.4.3 order taxonomy
+
+##### plot bar chart
+```{r}
+ab.Taxonomy <- ab.Taxonomy.order
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, Freq = ab.Taxonomy$Freq, Taxa = ab.Taxonomy$Order, Class = ab.Taxonomy$Class, Type = ab.Taxonomy$Type, Ant = ab.Taxonomy$Ant, Age = ab.Taxonomy$Age, Tree = ab.Taxonomy$TreeR)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Age", "Tree"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.Fp.order",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 7, height = 6, dpi = 300)
+```
+
+##### get statistics
+```{r}
+head(unique(Taxonomy$Order))
+levels(factor(tax.data2plot$Taxa))
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="_")
+sum.class.taxSample <- aggregate(tax.data2plot$Rel.Ab, by=list(taxYZ=tax.data2plot$taxSample), FUN=sum)
+head(sum.class.taxSample)
+
+# get statistics min mean max
+sum.class2check <- sum.class.taxSample # sum.class.taxType
+split <- str_split_fixed(sum.class2check$taxYZ, "_", 2)
+sum.class.min.max.2 <- cbind(split,sum.class2check)
+colnames(sum.class.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.class.min.max.2["Taxa"] <- lapply(sum.class.min.max.2["Taxa"], as.factor)
+
+d6 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d6) <- c("Taxa","min","mean", "max") # per site
+for (k in 1:length(levels(sum.class.min.max.2$Taxa))) {
+  d6[k,1] <- levels(sum.class.min.max.2$Taxa)[[k]]
+  d6[k,2] <- round(min(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+  d6[k,3] <- round(mean(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+  d6[k,4] <- round(max(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+}
+  print(d6[order(d6[,3],decreasing = TRUE),])
+```
+
+### 1.5 core community - rel. ab.
+```{r}
+(physeq.core <- physeq4norm.ansys)
+## ASV level
+
+{prev <- 50 # min % of samples
+det <- 0.4 # min % per sample
+(sub.core <- core(physeq.core, detection = det, prevalence = prev/100))
+print(sub.core)}
+tax.core <- as.data.frame(tax_table(sub.core))
+tax.core$taxa <- row.names(tax.core)
+
+# calculate average relative abundance of abundant taxa
+tax.core$av.ab <- colSums(otu_table(physeq.core)[,colnames(otu_table(physeq.core)) %in% tax.core$taxa])/nrow(otu_table(physeq.core)) 
+print(tax.core)
+unique(tax.core$Class)
+sum(tax.core$av.ab) # abundant taxa account for X% of total reads (based on rel.ab. per sample)
+
+tax.core.sort <- tax.core[order(tax.core$Phylum, tax.core$Class, tax.core$Order, tax.core$Family, tax.core$Genus),]
+print(tax.core.sort)
+```
+
+## 2. describe YCp = young ant colony patches (YP) ###########################################
+```{r}
+(physeq4abs.ansys <- physeq.YCp.abs)
+(physeq4abs.ansys <- prune_taxa(taxa_sums(physeq4abs.ansys) > 0, physeq4abs.ansys))
+(physeq4norm.ansys <- physeq.YCp.norm)
+(physeq4norm.ansys <- prune_taxa(taxa_sums(physeq4norm.ansys) > 0, physeq4norm.ansys))
+plottitle <- "ASV.ds.Ycp.norm"
+
+table(get_variable(physeq4norm.ansys)$Ant)
+sum(table(get_variable(physeq4norm.ansys)$Ant))
+length(unique(paste0(get_variable(physeq4norm.ansys)$Tree)))
+```
+
+### 2.1 alpha diversity - shannon
+```{r}
+plot_richness(physeq4abs.ansys, measures = c("Shannon"))
+
+### testing patch type alpha diversity for significance
+alpha <- get_variable(physeq4abs.ansys)
+alpha$Shannon <- estimate_richness(physeq4abs.ansys, measures = c("Shannon"))$Shannon
+
+(alpha.res <- kruskal.test(Shannon ~ Ant, data = alpha))
+(alpha.res.pw <- pairwise.wilcox.test(alpha$Shannon, alpha$Ant, p.adjust.method = "BH"))
+
+p <- ggplot(alpha, aes(Ant, Shannon))
+p + geom_boxplot(aes(fill = Ant), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  coord_cartesian(ylim = c(0.0, 6)) +
+  geom_jitter(color="darkblue", shape=16, position=position_jitter(0.2)) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.YCp.dots",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 4, height = 5, dpi = 300)
+
+alpha.sub <- alpha[grep("alf", alpha$Ant),]
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("con", alpha$Ant),]
+median(alpha.sub$Shannon)
+```
+
+### 2.2 beta diversity - PCoA
+```{r}
+bplot.obj <- capscale(otu_table(physeq4norm.ansys) ~ 1, distance = "bray")
+
+bplot.scores <- scores(bplot.obj)
+explained <- eigenvals( bplot.obj )/sum( eigenvals( bplot.obj ) ) * 100
+explained <- format( round( explained, 1 ), nsmall = 1 )
+
+bplot.df <- data.frame(id = row.names(bplot.scores$sites), bplot.scores$sites, Name = get_variable(physeq4norm.ansys)$Name, Type = get_variable(physeq4norm.ansys)$Type, Year = get_variable(physeq4norm.ansys)$Year, Ant = get_variable(physeq4norm.ansys)$Ant, Age = get_variable(physeq4norm.ansys)$Age, Tree = get_variable(physeq4norm.ansys)$TreeR)
+colnames(bplot.df)[c(2,3)] <- c("PC1", "PC2")
+
+# Ant
+p <- PlotOrd.single(bplot.df , components = c("PC1", "PC2"), groups = "Ant", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("PC 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("PC 2 (", explained[2], "%)", sep = ""))
+
+ggsave(paste(PLOTS_DIR,"/plot.PCoA.YC.Ant",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 4, dpi = 300)
+```
+
+### 2.3 drivers
+
+#### 2.3.1 PERMANOVA - adonis2
+```{r}
+(m.YC.Ant <- adonis2(otu_table(physeq4norm.ansys) ~ Ant, data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+(m.YC.Tree <- adonis2(otu_table(physeq4norm.ansys) ~ TreeR, data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+```
+
+### 2.4 community - bar charts
+
+#### 2.4.1 base for stacked bar charts
+```{r}
+OTU4tax <- as.data.frame(t(otu_table(physeq4norm.ansys)))
+  OTU4tax$Total <- rowSums(OTU4tax)
+  OTU4tax$OTU <- rownames(OTU4tax)
+dim(OTU4tax)
+
+Taxonomy2 <- cbind(physeq4norm.ansys@tax_table@.Data, OTU4tax) # combine data.frames 
+Taxonomy2[,1:6] <- lapply(Taxonomy2[,1:6], as.factor)
+Taxonomy2 <- melt(Taxonomy2, id = c("OTU", "Total", "Domain", "Phylum", "Class", "Order", "Family", "Genus"), variable.name = 'Name', value.name = 'Freq', na.rm = TRUE) # --> jede OTU in jedem sample einen eintrag mit frequenz
+
+Taxonomy <- merge(Taxonomy2, get_variable(physeq4norm.ansys), by="Name")
+
+ab.Taxonomy.phylum <- TaxThresh(Taxonomy, tax.level = "Phylum", thresh = 0.0)
+ab.Taxonomy.class <- TaxThresh(Taxonomy, tax.level = "Class", thresh = 0.5) # get ONLY abundant taxonomy
+ab.Taxonomy.order <- TaxThresh(Taxonomy, tax.level = "Order", thresh = 0.2)
+```
+
+#### 2.4.2 class taxonomy
+
+##### plot bar chart
+```{r}
+ab.Taxonomy <- ab.Taxonomy.class
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, Freq = ab.Taxonomy$Freq, Taxa = ab.Taxonomy$Class, Type = ab.Taxonomy$Type, Ant = ab.Taxonomy$Ant, Age = ab.Taxonomy$Age, Tree = ab.Taxonomy$TreeR)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Age", "Tree"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Ant == tax.data2plot$Ant[i]])
+  tax.data2plot$Ant.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar 
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.YC.class",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 7, height = 5, dpi = 300)
+```
+
+##### get statistics
+```{r}
+head(unique(Taxonomy$Class))
+levels(factor(tax.data2plot$Taxa))
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="_")
+sum.class.taxSample <- aggregate(tax.data2plot$Rel.Ab, by=list(taxYZ=tax.data2plot$taxSample), FUN=sum)
+head(sum.class.taxSample)
+
+# get statistics min mean max
+sum.class2check <- sum.class.taxSample # sum.class.taxType
+split <- str_split_fixed(sum.class2check$taxYZ, "_", 2)
+sum.class.min.max.2 <- cbind(split,sum.class2check)
+colnames(sum.class.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.class.min.max.2["Taxa"] <- lapply(sum.class.min.max.2["Taxa"], as.factor)
+
+d6 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d6) <- c("Taxa","min","mean", "max") # per site
+for (k in 1:length(levels(sum.class.min.max.2$Taxa))) {
+  d6[k,1] <- levels(sum.class.min.max.2$Taxa)[[k]]
+  d6[k,2] <- round(min(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+  d6[k,3] <- round(mean(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+  d6[k,4] <- round(max(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+}
+  print(d6[order(d6[,"mean"],decreasing = TRUE),])
+```
+
+#### 2.4.3 order taxonomy
+
+##### plot bar chart
+```{r}
+ab.Taxonomy <- ab.Taxonomy.order
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, Freq = ab.Taxonomy$Freq, Taxa = ab.Taxonomy$Order, Class = ab.Taxonomy$Class, Type = ab.Taxonomy$Type, Ant = ab.Taxonomy$Ant, Age = ab.Taxonomy$Age, Tree = ab.Taxonomy$TreeR)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Age", "Tree"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Ant == tax.data2plot$Ant[i]])
+  tax.data2plot$Ant.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.YC.order",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 7, height = 5, dpi = 300)
+```
+
+##### get statistics
+```{r}
+head(unique(Taxonomy$Order))
+levels(factor(tax.data2plot$Taxa))
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="_")
+sum.class.taxSample <- aggregate(tax.data2plot$Rel.Ab, by=list(taxYZ=tax.data2plot$taxSample), FUN=sum)
+head(sum.class.taxSample)
+
+# get statistics min mean max
+sum.class2check <- sum.class.taxSample # sum.class.taxType
+split <- str_split_fixed(sum.class2check$taxYZ, "_", 2)
+sum.class.min.max.2 <- cbind(split,sum.class2check)
+colnames(sum.class.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.class.min.max.2["Taxa"] <- lapply(sum.class.min.max.2["Taxa"], as.factor)
+
+d6 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d6) <- c("Taxa","min","mean", "max") # per site
+for (k in 1:length(levels(sum.class.min.max.2$Taxa))) {
+  d6[k,1] <- levels(sum.class.min.max.2$Taxa)[[k]]
+  d6[k,2] <- round(min(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+  d6[k,3] <- round(mean(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+  d6[k,4] <- round(max(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]),1)
+}
+  print(d6[order(d6[,"mean"],decreasing = TRUE),])
+```
+
+### 2.4 core community - rel. ab.
+```{r}
+(physeq.core <- physeq4norm.ansys)
+
+## ASV >?% in >?% of samples
+
+{prev <- 50 # min % of samples
+det <- 0.4 # min % per sample
+(sub.core <- core(physeq.core, detection = det, prevalence = prev/100))
+print(sub.core)}
+tax.core <- as.data.frame(tax_table(sub.core))
+tax.core$taxa <- row.names(tax.core)
+
+# calculate average relative abundance of abundant taxa
+
+tax.core$av.ab <- colSums(otu_table(physeq.core)[,colnames(otu_table(physeq.core)) %in% tax.core$taxa])/nrow(otu_table(physeq.core)) 
+print(tax.core)
+unique(tax.core$Class)
+sum(tax.core$av.ab) # abundant taxa account for X% of total reads (based on rel.ab. per sample)
+
+tax.core.sort <- tax.core[order(tax.core$Phylum, tax.core$Class, tax.core$Order, tax.core$Family, tax.core$Genus),]
+print(tax.core.sort)
+```
+
+## 3. describe Ep = established ant colony patches (EP) ######################################
+
+### 3.1 variation within ant colonies - age (only trees > 1 sample)
+```{r}
+(physeq4abs.ansys <- physeq.Ep.age.abs)
+(physeq4abs.ansys <- prune_taxa(taxa_sums(physeq4abs.ansys) > 0, physeq4abs.ansys))
+(physeq4norm.ansys <- physeq.Ep.age.norm)
+(physeq4norm.ansys <- prune_taxa(taxa_sums(physeq4norm.ansys) > 0, physeq4norm.ansys))
+plottitle <- "ASV.ds.Ep.age"
+
+table(get_variable(physeq4norm.ansys)$Ant)
+unique(paste0(get_variable(physeq4norm.ansys)$Ant,".", get_variable(physeq4norm.ansys)$Tree))
+```
+
+#### 3.1.1 alpha diversity - shannon
+```{r}
+plot_richness(physeq4abs.ansys, measures = c("Shannon"))
+
+### testing patch type alpha diversity for significance
+alpha <- get_variable(physeq4abs.ansys)
+alpha$Shannon <- estimate_richness(physeq4abs.ansys, measures = c("Shannon"))$Shannon
+
+(alpha.res <- kruskal.test(Shannon ~ Age, data = alpha))
+(alpha.res.pw <- pairwise.wilcox.test(alpha$Shannon, alpha$Age, p.adjust.method = "BH"))
+
+alpha.sub <- alpha[grep("\\.I\\.", alpha$Name),]
+mean(alpha.sub$Shannon)
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("\\.II\\.", alpha$Name),]
+mean(alpha.sub$Shannon)
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("\\.III\\.", alpha$Name),]
+mean(alpha.sub$Shannon)
+median(alpha.sub$Shannon)
+
+p <- ggplot(alpha, aes(Age, Shannon))
+p + geom_boxplot(aes(fill = Age), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  coord_cartesian(ylim = c(0.0, 6)) +
+  geom_jitter(color="darkblue", shape=16, position=position_jitter(0.2)) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.EpAge.dots",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 5, dpi = 300)
+
+p + geom_boxplot(aes(fill = Age), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.EpAge",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 5, dpi = 300)
+```
+
+#### 3.1.2 beta diversity - PCoA
+```{r}
+bplot.obj <- capscale(otu_table(physeq4norm.ansys) ~ 1, distance = "bray")
+
+bplot.scores <- scores(bplot.obj)
+explained <- eigenvals( bplot.obj )/sum( eigenvals( bplot.obj ) ) * 100
+explained <- format( round( explained, 1 ), nsmall = 1 )
+
+bplot.df <- data.frame(id = row.names(bplot.scores$sites), bplot.scores$sites, Name = get_variable(physeq4norm.ansys)$Name, Type = get_variable(physeq4norm.ansys)$Type, Year = get_variable(physeq4norm.ansys)$Year, Ant = get_variable(physeq4norm.ansys)$Ant, Age = get_variable(physeq4norm.ansys)$Age, Tree = get_variable(physeq4norm.ansys)$TreeR)
+colnames(bplot.df)[c(2,3)] <- c("PC1", "PC2")
+
+# Age
+p <- PlotOrd.single(bplot.df , components = c("PC1", "PC2"), groups = "Age", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("PC 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("PC 2 (", explained[2], "%)", sep = ""))
+```
+
+#### 3.1.3 drivers
+
+##### 3.1.3 PERMANOVA - adonis2
+```{r}
+(m.EpAge.Age <- adonis2(otu_table(physeq4norm.ansys) ~ Age,
+                       data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+
+(m.EpAge.Tree <- adonis2(otu_table(physeq4norm.ansys) ~ TreeR, 
+                        data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+
+(m.EpAge.AntStrat.Age <- adonis2(otu_table(physeq4norm.ansys) ~ Age,
+                            strata = get_variable(physeq4norm.ansys)$Ant, data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+```
+
+##### plotting - dbRDA
+```{r}
+bplot.obj <- capscale(otu_table(physeq4norm.ansys) ~ TreeR, data=get_variable(physeq4norm.ansys),  distance = "bray")
+
+bplot.scores <- scores(bplot.obj)
+explained <- eigenvals( bplot.obj )/sum( eigenvals( bplot.obj ) ) * 100
+explained <- format( round( explained, 1 ), nsmall = 1 )
+
+bplot.df <- data.frame(id = row.names(bplot.scores$sites), bplot.scores$sites, Name = get_variable(physeq4norm.ansys)$Name, Type = get_variable(physeq4norm.ansys)$Type, Year = get_variable(physeq4norm.ansys)$Year, Ant = get_variable(physeq4norm.ansys)$Ant, Age = get_variable(physeq4norm.ansys)$Age, Tree = get_variable(physeq4norm.ansys)$TreeR)
+colnames(bplot.df)[c(2,3)] <- c("PC1", "PC2")
+
+p <- PlotOrd.single.bP(bplot.df , components = c("PC1", "PC2"), groups = "Tree", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("dbRDA 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("dbRDA 2 (", explained[2], "%)", sep = ""))
+
+ggsave(paste(PLOTS_DIR,"/plot.dbRDA.EpAge.Tree",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5.6, height = 4, dpi = 300)
+```
+
+### 3.2 Ep averaged trees - one sample per establ. ant colony
+```{r}
+(physeq4abs.ansys <- physeq.Ep.mean.abs)
+(physeq4abs.ansys <- prune_taxa(taxa_sums(physeq4abs.ansys) > 0, physeq4abs.ansys))
+(physeq4norm.ansys <- physeq.Ep.mean.norm)
+(physeq4norm.ansys <- prune_taxa(taxa_sums(physeq4norm.ansys) > 0, physeq4norm.ansys))
+plottitle <- "ASV.new.ds.Ep.mean-RNAlater.only"
+
+table(get_variable(physeq4norm.ansys)$Ant)
+unique(paste0(get_variable(physeq4norm.ansys)$Ant,".", get_variable(physeq4norm.ansys)$Tree))
+```
+
+#### 3.2.1 alpha diversity - shannon
+```{r}
+plot_richness(physeq4abs.ansys, measures = c("Shannon"))
+
+### testing patch type alpha diversity for significance
+alpha <- get_variable(physeq4abs.ansys)
+alpha$Shannon <- estimate_richness(physeq4abs.ansys, measures = c("Shannon"))$Shannon
+
+(alpha.res <- wilcox.test(Shannon ~ Ant, data = alpha))
+
+p <- ggplot(alpha, aes(Ant, Shannon))
+p + geom_boxplot(aes(fill = Ant), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  coord_cartesian(ylim = c(0.0, 6)) +
+  geom_jitter(color="darkblue", shape=16, position=position_jitter(0.2)) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.Epmean.dots",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 4, height = 5, dpi = 300)
+
+alpha.sub <- alpha[grep("alf", alpha$Ant),]
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("con", alpha$Ant),]
+median(alpha.sub$Shannon)
+```
+
+#### 3.2.2 drivers - Ep.mean
+
+##### PERMANOVA - adonis2
+```{r}
+(m.Epmean.Ant <- adonis2(otu_table(physeq4norm.ansys) ~ Ant,
+                        data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+```
+
+##### plotting - dbRDA
+```{r}
+# Ant
+bplot.obj <- capscale(otu_table(physeq4norm.ansys) ~ Ant, data=get_variable(physeq4norm.ansys),  distance = "bray")
+
+bplot.scores <- scores(bplot.obj)
+explained <- eigenvals( bplot.obj )/sum( eigenvals( bplot.obj ) ) * 100
+explained <- format( round( explained, 1 ), nsmall = 1 )
+
+bplot.df <- data.frame(id = row.names(bplot.scores$sites), bplot.scores$sites, Name = get_variable(physeq4norm.ansys)$Name, Type = get_variable(physeq4norm.ansys)$Type, Year = get_variable(physeq4norm.ansys)$Year, Ant = get_variable(physeq4norm.ansys)$Ant, Age = get_variable(physeq4norm.ansys)$Age, Tree = get_variable(physeq4norm.ansys)$TreeR)
+colnames(bplot.df)[c(2,3)] <- c("PC1", "PC2")
+
+p <- PlotOrd.single(bplot.df , components = c("PC1", "PC2"), groups = "Ant", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("dbRDA 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("dbRDA 2 (", explained[2], "%)", sep = ""))
+
+ggsave(paste(PLOTS_DIR,"/plot.dbRDA.Epmean.Ant",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 4, dpi = 300)
+```
+
+#### 3.2.3 community - bar charts
+
+##### base for stacked bar charts
+```{r}
+OTU4tax <- as.data.frame(t(otu_table(physeq4norm.ansys)))
+  OTU4tax$Total <- rowSums(OTU4tax)
+  OTU4tax$OTU <- rownames(OTU4tax)
+dim(OTU4tax)
+
+Taxonomy2 <- cbind(physeq4norm.ansys@tax_table@.Data, OTU4tax)
+Taxonomy2[,1:6] <- lapply(Taxonomy2[,1:6], as.factor)
+Taxonomy2 <- melt(Taxonomy2, id = c("OTU", "Total", "Domain", "Phylum", "Class", "Order", "Family", "Genus"), variable.name = 'Name', value.name = 'Freq', na.rm = TRUE)
+
+Taxonomy <- merge(Taxonomy2, get_variable(physeq4norm.ansys), by="Name")
+
+ab.Taxonomy.domain <- TaxThresh(Taxonomy, tax.level = "Domain", thresh = 0.0)
+ab.Taxonomy.phylum <- TaxThresh(Taxonomy, tax.level = "Phylum", thresh = 0.0)
+ab.Taxonomy.class <- TaxThresh(Taxonomy, tax.level = "Class", thresh = 0.5)
+ab.Taxonomy.order <- TaxThresh(Taxonomy, tax.level = "Order", thresh = 0.5)
+```
+
+##### class taxonomy
+
+###### plot bar chart
+```{r}
+ab.Taxonomy <- ab.Taxonomy.class
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, Freq = ab.Taxonomy$Freq, Taxa = ab.Taxonomy$Class, Type = ab.Taxonomy$Type, Ant = ab.Taxonomy$Ant, Age = ab.Taxonomy$Age, Tree = ab.Taxonomy$TreeR)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Age", "Tree"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Ant == tax.data2plot$Ant[i]])
+  tax.data2plot$Ant.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.Epmean.class",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 7, height = 5, dpi = 300)
+
+  ## plot stacked bar chart per ant
+AllAnt.bar <- qplot(x=Ant,data=tax.data2plot,geom="bar",weight=Ant.Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllAnt.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.Epmean.class.Ant",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 7, height = 5, dpi = 300)
+```
+
+###### get statistics
+```{r}
+head(unique(Taxonomy$Phylum))
+head(unique(Taxonomy$Class))
+levels(factor(tax.data2plot$Taxa))
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="_")
+sum.class.taxSample <- aggregate(tax.data2plot$Rel.Ab, by=list(taxYZ=tax.data2plot$taxSample), FUN=sum)
+head(sum.class.taxSample)
+
+# get statistics min mean max
+sum.class2check <- sum.class.taxSample # sum.class.taxType
+split <- str_split_fixed(sum.class2check$taxYZ, "_", 2)
+sum.class.min.max.2 <- cbind(split,sum.class2check)
+colnames(sum.class.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.class.min.max.2["Taxa"] <- lapply(sum.class.min.max.2["Taxa"], as.factor)
+
+d6 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d6) <- c("Taxa","min","mean", "max") # per site
+for (k in 1:length(levels(sum.class.min.max.2$Taxa))) {
+  d6[k,1] <- levels(sum.class.min.max.2$Taxa)[[k]]
+  d6[k,2] <- min(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+  d6[k,3] <- mean(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+  d6[k,4] <- max(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+}
+  print(d6[order(d6[,"mean"],decreasing = TRUE),])
+
+# Ant (Ep) variation
+tax.data2plot$taxAnt <- paste(tax.data2plot$Taxa, tax.data2plot$Ant, sep="_")
+sum.class.taxAnt <- aggregate(tax.data2plot$Ant.Rel.Ab, by=list(taxYZ=tax.data2plot$taxAnt), FUN=sum)
+head(sum.class.taxAnt) 
+sum(sum.class.taxAnt$x)
+
+# get statistics per ant species
+sum.class2check <- sum.class.taxAnt # sum.class.taxType
+split <- str_split_fixed(sum.class2check$taxYZ, "_", 2)
+sum.class.min.max.2 <- cbind(split,sum.class2check)
+colnames(sum.class.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.class.min.max.2["Taxa"] <- lapply(sum.class.min.max.2["Taxa"], as.factor)
+
+d7 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d7) <- c("Taxa","alf","con", "mean") # per site
+for (k in 1:length(levels(sum.class.min.max.2$Taxa))) {
+  d7[k,1] <- levels(sum.class.min.max.2$Taxa)[[k]]
+  d7[k,2:3] <- sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]]
+  d7[k,4] <- mean(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+}
+  print(d7[order(d7[,"mean"],decreasing = TRUE),])
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="_")
+
+# get statistics min mean max per ant species
+for (j in c("alf", "con")){
+tax.data2plot.ant <- tax.data2plot[tax.data2plot$Ant == j,]
+sum.class.taxSample <- aggregate(tax.data2plot.ant$Rel.Ab, by=list(taxYZ=tax.data2plot.ant$taxSample), FUN=sum)
+head(sum.class.taxSample)
+
+sum.class2check <- sum.class.taxSample # sum.class.taxType
+split <- str_split_fixed(sum.class2check$taxYZ, "_", 2)
+sum.class.min.max.2 <- cbind(split,sum.class2check)
+colnames(sum.class.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.class.min.max.2["Taxa"] <- lapply(sum.class.min.max.2["Taxa"], as.factor)
+
+d6 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d6) <- c(paste0(j,".Taxa"),"min","mean", "max") # per site
+for (k in 1:length(levels(sum.class.min.max.2$Taxa))) {
+  d6[k,1] <- levels(sum.class.min.max.2$Taxa)[[k]]
+  d6[k,2] <- min(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+  d6[k,3] <- mean(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+  d6[k,4] <- max(sum.class.min.max.2$rel.ab[sum.class.min.max.2$Taxa == levels(sum.class.min.max.2$Taxa)[[k]]])
+}
+  print(d6[order(d6[,"mean"],decreasing = TRUE),])
+}
+```
+
+##### order taxonomy
+
+###### plot bar chart
+```{r}
+ab.Taxonomy <- ab.Taxonomy.order
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, Freq = ab.Taxonomy$Freq, Taxa = ab.Taxonomy$Order, Class = ab.Taxonomy$Class, Type = ab.Taxonomy$Type, Ant = ab.Taxonomy$Ant, Age = ab.Taxonomy$Age, Tree = ab.Taxonomy$TreeR)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Age", "Tree"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+tax.data2plot$Taxa <- gsub("_or","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Ant == tax.data2plot$Ant[i]])
+  tax.data2plot$Ant.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar 
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.Epmean.order",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 10, height = 5, dpi = 300)
+
+AllAnt.bar <- qplot(x=Ant,data=tax.data2plot,geom="bar",weight=Ant.Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllAnt.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.Epmean.order.Ant",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 6, height = 5, dpi = 300)
+```
+
+###### get statistics
+```{r}
+levels(factor(tax.data2plot$Taxa))
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="__")
+sum.tax.taxSample <- aggregate(tax.data2plot$Rel.Ab, by=list(taxYZ=tax.data2plot$taxSample), FUN=sum)
+head(sum.tax.taxSample)
+
+# get statistics min mean max
+sum.tax2check <- sum.tax.taxSample # sum.tax.taxType
+split <- str_split_fixed(sum.tax2check$taxYZ, "__", 2)
+sum.tax.min.max.2 <- cbind(split,sum.tax2check)
+colnames(sum.tax.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.tax.min.max.2["Taxa"] <- lapply(sum.tax.min.max.2["Taxa"], as.factor)
+
+d6 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d6) <- c("Taxa","min","mean", "max") # per site
+for (k in 1:length(levels(sum.tax.min.max.2$Taxa))) {
+  d6[k,1] <- levels(sum.tax.min.max.2$Taxa)[[k]]
+  d6[k,2] <- min(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+  d6[k,3] <- mean(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+  d6[k,4] <- max(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+}
+  print(d6[order(d6[,"mean"],decreasing = TRUE),])
+
+# Ant (Ep) variation
+tax.data2plot$taxAnt <- paste(tax.data2plot$Taxa, tax.data2plot$Ant, sep="__")
+sum.tax.taxAnt <- aggregate(tax.data2plot$Ant.Rel.Ab, by=list(taxYZ=tax.data2plot$taxAnt), FUN=sum)
+
+sum(sum.tax.taxAnt$x)
+
+# get statistics per ant species
+sum.tax2check <- sum.tax.taxAnt # sum.tax.taxType
+split <- str_split_fixed(sum.tax2check$taxYZ, "__", 2)
+sum.tax.min.max.2 <- cbind(split,sum.tax2check)
+colnames(sum.tax.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.tax.min.max.2["Taxa"] <- lapply(sum.tax.min.max.2["Taxa"], as.factor)
+
+d7 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d7) <- c("Taxa","alf","con", "mean") # per site
+for (k in 1:length(levels(sum.tax.min.max.2$Taxa))) {
+  d7[k,1] <- levels(sum.tax.min.max.2$Taxa)[[k]]
+  d7[k,2:3] <- sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]]
+  d7[k,4] <- mean(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+}
+  print(d7[order(d7[,"mean"],decreasing = TRUE),])
+
+# sample variation
+tax.data2plot$taxSample <- paste(tax.data2plot$Taxa, tax.data2plot$Sample, sep="_")
+
+# get statistics min mean max per ant species
+for (j in c("alf", "con")){
+tax.data2plot.ant <- tax.data2plot[tax.data2plot$Ant == j,]
+sum.tax.taxSample <- aggregate(tax.data2plot.ant$Rel.Ab, by=list(taxYZ=tax.data2plot.ant$taxSample), FUN=sum)
+head(sum.tax.taxSample)
+
+sum.tax2check <- sum.tax.taxSample # sum.tax.taxType
+split <- str_split_fixed(sum.tax2check$taxYZ, "_", 2)
+sum.tax.min.max.2 <- cbind(split,sum.tax2check)
+colnames(sum.tax.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.tax.min.max.2["Taxa"] <- lapply(sum.tax.min.max.2["Taxa"], as.factor)
+
+d8 <- data.frame(matrix(ncol = 4,nrow = 0))
+  colnames(d8) <- c(paste0(j,".Taxa"),"min","mean", "max") # per site
+for (k in 1:length(levels(sum.tax.min.max.2$Taxa))) {
+  d8[k,1] <- levels(sum.tax.min.max.2$Taxa)[[k]]
+  d8[k,2] <- min(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+  d8[k,3] <- mean(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+  d8[k,4] <- max(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+}
+  print(d8[order(d8[,"mean"],decreasing = TRUE),])
+}
+```
+
+#### 3.2.4 Venn diagram - rel. ab.
+
+##### OTU level - prevalent OTUs
+```{r}
+venn.var <- unique(as.character(meta(physeq4norm.ansys)$Ant))
+print(venn.var)
+
+list_core <- c() # an empty object to store information
+
+prev <- 50 # min % of samples
+det <- 0.4 # min % per sample
+
+for (n in venn.var){ # for each variable n in Ants
+    #print(paste0("Identifying Core Taxa for ", n))
+    
+    ps.sub <- subset_samples(physeq4norm.ansys, Ant == n) # Choose sample from Ants by n
+    
+    core_m <- core_members(ps.sub, # ps.sub is phyloseq selected with only samples from g 
+                           detection = det, 
+                           prevalence = prev/100)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m))) # print core taxa identified in each Ants
+    list_core[[n]] <- core_m # add to a list core taxa for each group.
+    # print(list_core)
+}
+
+# subset the EPmean dataset extracting only widespread OTUs
+(abundant.otus <- unique(c(list_core[[1]], list_core[[2]])))
+length(abundant.otus) # No. of OTUs widespread in alf or con EPs
+df.abundant <- as.data.frame(physeq4norm.ansys@tax_table@.Data)[rownames(physeq4norm.ansys@tax_table) %in% abundant.otus,]
+head(df.abundant)
+
+# average relative abundance of every OTU in the EPmean dataset
+df.abundant$av.ab <- colSums(otu_table(physeq4norm.ansys)[,colnames(otu_table(physeq4norm.ansys)) %in% abundant.otus])/nrow(otu_table(physeq4norm.ansys))
+head(df.abundant)
+(abundant.percOfTotReads <- sum(df.abundant$av.ab)) # % of EPmean reads
+
+plot(venn(list_core),
+     fills = c(alf="#d6e2e9", con="#cbf3f0"))
+
+length(intersect(list_core$con, list_core$alf)) # no. of shared 
+length(unique(c(list_core$alf, list_core$con))) # no. of all valid taxa
+length(intersect(list_core$con, list_core$alf))/length(unique(c(list_core$alf, list_core$con)))*100
+
+(shared <- intersect(list_core$con, list_core$alf)) # shared
+
+# shared OTUs account for X% of EPmean reads
+shared.av.ab <- colSums(otu_table(physeq4norm.ansys)[,colnames(otu_table(physeq4norm.ansys)) %in% shared])/
+  nrow(otu_table(physeq4norm.ansys))
+sum(shared.av.ab)
+
+(alf <- setdiff(list_core$alf, list_core$con)) # only in alf
+length(alf)
+(con <- setdiff(list_core$con, list_core$alf)) # only in con
+length(con)
+
+(df.shared <- as.data.frame(physeq4norm.ansys@tax_table@.Data)[rownames(physeq4norm.ansys@tax_table) %in% shared,])
+df.shared$av.ab <- shared.av.ab
+df.shared.sort <- df.shared[order(df.shared$Phylum, df.shared$Class, df.shared$Order, df.shared$Family, df.shared$Genus),]
+unique(df.shared.sort$Class)
+
+(df.alf <- as.data.frame(physeq4norm.ansys@tax_table@.Data)[rownames(physeq4norm.ansys@tax_table) %in% alf,])
+df.alf$av.ab <- colSums(otu_table(physeq4norm.ansys)[,colnames(otu_table(physeq4norm.ansys)) %in% alf])/
+  nrow(otu_table(physeq4norm.ansys))
+df.alf.sort <- df.alf[order(df.alf$Phylum, df.alf$Class, df.alf$Order, df.alf$Family, df.alf$Genus),]
+unique(df.alf.sort$Class)
+
+(df.con <- as.data.frame(physeq4norm.ansys@tax_table@.Data)[rownames(physeq4norm.ansys@tax_table) %in% con,])
+df.con$av.ab <- colSums(otu_table(physeq4norm.ansys)[,colnames(otu_table(physeq4norm.ansys)) %in% con])/
+  nrow(otu_table(physeq4norm.ansys))
+df.con.sort <- df.con[order(df.con$Phylum, df.con$Class, df.con$Order, df.con$Family, df.con$Genus),]
+unique(df.con.sort$Class)
+
+df.widespread.sort <- cbind(
+    "OTU" = c(rownames(df.shared.sort), rownames(df.alf.sort), rownames(df.con.sort)),
+    "category" =  c(rep("Shared",length(shared)), rep("A. alfari",length(alf)), rep("A. constructor",length(con))),
+    rbind(df.shared.sort, df.alf.sort, df.con.sort)
+    )
+print(df.widespread.sort)
+```
+
+## 4. succession = patches of all three developmental stages #################################
+```{r}
+(physeq4abs.ansys <- physeq.p.abs)
+(physeq4abs.ansys <- prune_taxa(taxa_sums(physeq4abs.ansys) > 0, physeq4abs.ansys))
+(physeq4norm.ansys <- physeq.p.norm)
+(physeq4norm.ansys <- prune_taxa(taxa_sums(physeq4norm.ansys) > 0, physeq4norm.ansys))
+plottitle <- "ASV.ds.p.newEpmean"
+
+# adding a new category for splitting up EP for analysing IP, YP, EP_alf, EP_con
+sample_data(physeq4norm.ansys)$Succ <- paste0(sample_data(physeq4norm.ansys)$Type, "_", sample_data(physeq4norm.ansys)$Ant)
+sample_data(physeq4norm.ansys)$Succ <- gsub("0\\.Fp_.*","0\\.Fp", sample_data(physeq4norm.ansys)$Succ)
+sample_data(physeq4norm.ansys)$Succ <- as.factor(gsub("1\\.YCp_.*","1\\.YCp", sample_data(physeq4norm.ansys)$Succ))
+
+table(get_variable(physeq4norm.ansys)$Ant)
+sum(table(get_variable(physeq4norm.ansys)$Ant))
+length(unique(paste0(get_variable(physeq4norm.ansys)$Tree)))
+```
+
+### 4.1 alpha diversity - shannon - all colonies
+```{r}
+plot_richness(physeq4abs.ansys, measures = c("Shannon"))
+
+### testing patch type alpha diversity for significance
+alpha <- get_variable(physeq4abs.ansys)
+alpha$Shannon <- estimate_richness(physeq4abs.ansys, measures = c("Shannon"))$Shannon
+
+(alpha.res <- kruskal.test(Shannon ~ Type, data = alpha))
+(alpha.res.pw <- pairwise.wilcox.test(alpha$Shannon, alpha$Type, p.adjust.method = "BH"))
+
+alpha.sub <- alpha[grep("0.Fp", alpha$Type),]
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("1.YCp", alpha$Type),]
+median(alpha.sub$Shannon)
+alpha.sub <- alpha[grep("2.Ep", alpha$Type),]
+median(alpha.sub$Shannon)
+
+p <- ggplot(alpha, aes(Type, Shannon))
+p + geom_boxplot(aes(fill = Type), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  coord_cartesian(ylim = c(0.0, 6)) +
+  geom_jitter(color="darkblue", shape=16, position=position_jitter(0.2)) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.p.dots",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 5, dpi = 300)
+
+p + geom_boxplot(aes(fill = Type), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.p",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 5, dpi = 300)
+```
+
+### 4.2 alpha diversity - shannon - intra ant species
+```{r}
+### testing patch type alpha diversity for significance
+alpha <- get_variable(physeq4abs.ansys)
+alpha$Shannon <- estimate_richness(physeq4abs.ansys, measures = c("Shannon"))$Shannon
+alpha$AntType <- paste0(alpha$Ant, "_", alpha$Type)
+(alpha.intra.res <- kruskal.test(Shannon ~ AntType, data = alpha))
+
+### testing for pairwise significance
+(alpha.intra.res.pw <- pairwise.wilcox.test(alpha$Shannon, alpha$AntType, p.adjust.method = "BH"))
+
+### getting significance letters
+(a <- melt(alpha.intra.res.pw$p.value))
+a.cc  <-  na.omit(a)
+a.pvals  <-  a.cc[, 3]
+names(a.pvals)  <-  paste(a.cc[, 2], a.cc[, 1], sep="-")
+a.pvals
+(sign.letters <- multcompView::multcompLetters(a.pvals))
+
+### plotting alpa diversities - Shannon
+p <- ggplot(alpha, aes(AntType, Shannon))
+p + geom_boxplot(aes(fill = Type), outlier.colour="red", outlier.shape=NA, outlier.size=2) +
+  ggtitle(plottitle) +
+  coord_cartesian(ylim = c(0.0, 6)) +
+  geom_jitter(color="darkblue", shape=16, position=position_jitter(0.2)) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(paste(PLOTS_DIR,"/alpha.boxplot.p.AntType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 5, dpi = 300)
+
+### summary
+cat <- sort(unique(alpha$AntType))
+df.all <- data.frame(NULL)
+for (k in 1:length(cat)){
+alpha.sub <- alpha[grep(cat[k], alpha$AntType),]
+df.all[k,1] <- cat[k]
+df.all[k,2] <- median(alpha.sub$Shannon)
+}
+colnames(df.all) <- c("AntType","median.Shannon")
+df.all$SignLetter <- sign.letters$Letters
+print(df.all)
+```
+
+### 4.2 beta diversity - PCoA
+```{r}
+bplot.obj <- capscale(otu_table(physeq4norm.ansys) ~ 1, distance = "bray")
+
+bplot.scores <- scores(bplot.obj)
+explained <- eigenvals( bplot.obj )/sum( eigenvals( bplot.obj ) ) * 100
+explained <- format( round( explained, 1 ), nsmall = 1 )
+
+bplot.df <- data.frame(id = row.names(bplot.scores$sites), bplot.scores$sites, Name = get_variable(physeq4norm.ansys)$Name, Type = get_variable(physeq4norm.ansys)$Type, Year = get_variable(physeq4norm.ansys)$Year, Ant = get_variable(physeq4norm.ansys)$Ant, Age = get_variable(physeq4norm.ansys)$Age, Tree = get_variable(physeq4norm.ansys)$TreeR)
+colnames(bplot.df)[c(2,3)] <- c("PC1", "PC2")
+
+# Type
+p <- PlotOrd.single(bplot.df , components = c("PC1", "PC2"), groups = "Type", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("PC 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("PC 2 (", explained[2], "%)", sep = ""))
+
+ggsave(paste(PLOTS_DIR,"/plot.PCoA.p.Type",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 7, height = 6, dpi = 300)
+
+# Ant
+p <- PlotOrd.single(bplot.df , components = c("PC1", "PC2"), groups = "Ant", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("PC 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("PC 2 (", explained[2], "%)", sep = ""))
+
+# Type & Ant
+p <- PlotOrd(bplot.df , components = c("PC1", "PC2"), groups = "Ant", treatment = "Type", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("PC 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("PC 2 (", explained[2], "%)", sep = ""))
+
+ggsave(paste(PLOTS_DIR,"/plot.PCoA.p.AntType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 7, height = 6, dpi = 300)
+
+# Type & Type
+p <- PlotOrd(bplot.df , components = c("PC1", "PC2"), groups = "Type", treatment = "Type", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("PC 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("PC 2 (", explained[2], "%)", sep = ""))
+```
+
+### 4.3 drivers
+
+#### 4.3.1 PERMANOVA - adonis2
+```{r}
+(m.p.Type <- adonis2(otu_table(physeq4norm.ansys) ~ Type,
+                    data = get_variable(physeq4norm.ansys), method = "bray", permutations = 9999))
+```
+
+#### 4.3.2 plotting - dbRDA
+```{r}
+dbRDA.obj <- capscale((otu_table(physeq4norm.ansys)) ~ Type, data=get_variable(physeq4norm.ansys),  distance = "bray")
+
+dbRDA.scores <- scores(dbRDA.obj)
+explained <- eigenvals( dbRDA.obj )/sum( eigenvals( dbRDA.obj ) ) * 100
+explained <- format( round( explained, 1 ), nsmall = 1 )
+
+dbRDA.df <- data.frame(id = row.names(dbRDA.scores$sites), dbRDA.scores$sites, Name = get_variable(physeq4norm.ansys)$Name, Type = get_variable(physeq4norm.ansys)$Type, Year = get_variable(physeq4norm.ansys)$Year, Ant = get_variable(physeq4norm.ansys)$Ant, Age = get_variable(physeq4norm.ansys)$Age, Tree = get_variable(physeq4norm.ansys)$TreeR)
+colnames(dbRDA.df)[c(2,3)] <- c("PC1", "PC2")
+
+# Type
+p <- PlotOrd.single(dbRDA.df , components = c("PC1", "PC2"), groups = "Type", variance = TRUE, connect = FALSE)
+
+p + scale_size_manual(values = c(4, 8)) + ggtitle(plottitle) +
+  xlab(paste("dbRDA 1 (", explained[1], "%)", sep = "")) + 
+  ylab(paste("dbRDA 2 (", explained[2], "%)", sep = ""))
+
+ggsave(paste(PLOTS_DIR,"/plot.dbRDA.p.Type",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 5, height = 4, dpi = 300)
+```
+
+### 4.4 community - bar charts
+
+#### 4.4.1 base for stacked bar charts
+```{r}
+OTU4tax <- as.data.frame(t(otu_table(physeq4norm.ansys)))
+  OTU4tax$Total <- rowSums(OTU4tax)
+  OTU4tax$OTU <- rownames(OTU4tax)
+dim(OTU4tax)
+
+Taxonomy2 <- cbind(physeq4norm.ansys@tax_table@.Data, OTU4tax) 
+Taxonomy2[,1:6] <- lapply(Taxonomy2[,1:6], as.factor)
+Taxonomy2 <- melt(Taxonomy2, id = c("OTU", "Total", "Domain", "Phylum", "Class", "Order", "Family", "Genus"), variable.name = 'Name', value.name = 'Freq', na.rm = TRUE) # --> jede OTU in jedem sample einen eintrag mit frequenz
+
+Taxonomy <- merge(Taxonomy2, get_variable(physeq4norm.ansys), by="Name") #meta
+
+ab.Taxonomy.phylum <- TaxThresh(Taxonomy, tax.level = "Phylum", thresh = 0.0)
+ab.Taxonomy.class <- TaxThresh(Taxonomy, tax.level = "Class", thresh = 0.2) # get ONLY abundant taxonomy
+ab.Taxonomy.order <- TaxThresh(Taxonomy, tax.level = "Order", thresh = 0.27)
+ab.Taxonomy.order.3 <- TaxThresh(Taxonomy, tax.level = "Order", thresh = 0.3)
+```
+
+#### 4.4.2 class taxonomy
+
+##### plot - samples
+```{r}
+ab.Taxonomy <- ab.Taxonomy.class
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, 
+                             Freq = ab.Taxonomy$Freq, 
+                             Taxa = ab.Taxonomy$Class, 
+                             Type = ab.Taxonomy$Type, Ant = ab.Taxonomy$Ant, 
+                             Succ = ab.Taxonomy$Succ)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Succ"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Type == tax.data2plot$Type[i]])
+  tax.data2plot$Type.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Succ == tax.data2plot$Succ[i]])
+  tax.data2plot$Succ.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.class",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 14, height = 5, dpi = 300)
+
+AllSample.bar + facet_wrap( ~ Type, scale="free_x", ncol=3) # rel. Abundance
+```
+
+##### plot - per SuccessionType
+```{r}
+# split up between EP ants
+  ## plot stacked bar chart per Succession.Type
+Succ.bar <- qplot(x=Succ,data=tax.data2plot,geom="bar",weight=Succ.Rel.Ab,fill=Taxa,main=plottitle) +
+  scale_fill_manual(values=colPalette03) +
+  scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+print(Succ.bar)
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.class.SuccType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 6, height = 4, dpi = 300)
+
+# mOm mean of 2 means (EP_alf, EP_con) = merged EP after splitting up between EP ants
+
+EPOnly <- tax.data2plot[grep("2.Ep",tax.data2plot$Type),]
+EPOnly$Succ.Rel.Ab <- EPOnly$Succ.Rel.Ab/2
+NoEP <- tax.data2plot[-grep("2.Ep",tax.data2plot$Type),]
+tax.data2plotmOm <- rbind(NoEP,EPOnly)
+
+Succ.bar <- qplot(x=Type,data=tax.data2plotmOm,geom="bar",weight=Succ.Rel.Ab,fill=Taxa,main=paste0(plottitle,".mOm.SuccType")) +
+  scale_fill_manual(values=colPalette03) +
+  scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+print(Succ.bar)
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.class.mOm.SuccType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 6, height = 4, dpi = 300)
+```
+
+##### get statistics - per SuccessionType
+```{r}
+head(unique(Taxonomy$Class))
+levels(factor(tax.data2plot$Taxa))
+
+# Succ (p) variation
+tax.data2plot$taxSucc <- paste(tax.data2plot$Taxa, tax.data2plot$Succ, sep=";")
+sum.tax.taxSucc <- aggregate(tax.data2plot$Succ.Rel.Ab, by=list(taxYZ=tax.data2plot$taxSucc), FUN=sum)
+
+# get statistics per SuccessionType
+sum.tax2check <- sum.tax.taxSucc
+split <- str_split_fixed(sum.tax2check$taxYZ, ";", 2)
+sum.tax.min.max.2 <- cbind(split,sum.tax2check)
+colnames(sum.tax.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.tax.min.max.2["Taxa"] <- lapply(sum.tax.min.max.2["Taxa"], as.factor)
+
+d7 <- data.frame(matrix(ncol = 6,nrow = 0))
+  colnames(d7) <- c("Taxa", "IP","YC", "EP_alf", "EP_con", "mOm_EP")
+for (k in 1:length(levels(sum.tax.min.max.2$Taxa))) {
+  d7[k,1] <- levels(sum.tax.min.max.2$Taxa)[[k]]
+  # d7[k,2] <- mean(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+  d7[k,2:5] <- sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]]
+  d7[k,6] <- (d7[k,4] + d7[k,5])/2 # calc mOm = mean of means
+}
+  print(d7)
+```
+
+#### 4.4.3 order taxonomy
+
+##### plot - samples
+```{r}
+ab.Taxonomy <- ab.Taxonomy.order.3
+
+tax.data2plot <- data.frame(Sample = ab.Taxonomy$Name, 
+                             Freq = ab.Taxonomy$Freq, 
+                             Taxa = ab.Taxonomy$Order, 
+                             Class=ab.Taxonomy$Class, 
+                             Type = ab.Taxonomy$Type, 
+                             Ant = ab.Taxonomy$Ant, 
+                             Succ = ab.Taxonomy$Succ)
+
+tax.data2plot <- ddply(tax.data2plot, c("Taxa", "Sample", "Type", "Ant", "Succ"), summarise, Freq = sum(Freq))
+
+# rename "_unclassified"
+tax.data2plot$Taxa <- gsub("_unclassified","_uncl.", tax.data2plot$Taxa)
+
+# for stacked bar charts
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Sample == tax.data2plot$Sample[i]])
+  tax.data2plot$Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Type == tax.data2plot$Type[i]])
+  tax.data2plot$Type.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+for (i in 1:nrow(tax.data2plot)) {
+  sample.sum <- sum(tax.data2plot$Freq[tax.data2plot$Succ == tax.data2plot$Succ[i]])
+  tax.data2plot$Succ.Rel.Ab[i] <- tax.data2plot$Freq[i] / sample.sum * 100}
+
+  ## plot stacked bar chart per sample
+AllSample.bar <- qplot(x=Sample,data=tax.data2plot,geom="bar",weight=Rel.Ab,fill=Taxa,main=plottitle) + scale_fill_manual(values=colPalette03) +
+    scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+AllSample.bar
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.order.3",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 14, height = 5, dpi = 300)
+
+AllSample.bar + facet_wrap( ~ Type, scale="free_x", ncol=3)
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.order.3.fwType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 14, height = 5, dpi = 300)
+```
+
+##### plot - per SuccessionType
+```{r}
+# split up between EP ants
+  ## plot stacked bar chart per Succession.Type
+Succ.bar <- qplot(x=Succ,data=tax.data2plot,geom="bar",weight=Succ.Rel.Ab,fill=Taxa,main=plottitle) +
+  scale_fill_manual(values=colPalette03) +
+  scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+print(
+  Succ.bar + facet_wrap( ~ Type, scale="free_x") # rel. Abundance
+)
+
+print(Succ.bar)
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.order.SuccType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 8, height = 4, dpi = 300)
+
+# mOm mean of 2 means (EP_alf, EP_con) = merged EP after splitting up between EP ants
+
+EPOnly <- tax.data2plot[grep("2.Ep",tax.data2plot$Type),]
+EPOnly$Succ.Rel.Ab <- EPOnly$Succ.Rel.Ab/2
+NoEP <- tax.data2plot[-grep("2.Ep",tax.data2plot$Type),]
+tax.data2plotmOm <- rbind(NoEP,EPOnly)
+
+Succ.bar <- qplot(x=Type,data=tax.data2plotmOm,geom="bar",weight=Succ.Rel.Ab,fill=Taxa,main=paste0(plottitle,".mOm.SuccType")) +
+  scale_fill_manual(values=colPalette03) +
+  scale_y_continuous(expand = c(0,1)) + # reduced space between bars and x-axis
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+print(
+  Succ.bar + facet_wrap( ~ Type, scale="free_x") # rel. Abundance
+  )
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.order.fw.mOm.SuccType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 8, height = 4, dpi = 300)
+
+print(Succ.bar)
+
+ggsave(paste(PLOTS_DIR,"/bar.tax.p.order.mOm.SuccType",Sys.Date(),"pdf",sep = "."), useDingbats=FALSE,width = 8, height = 4, dpi = 300)
+```
+
+##### get statistics - per SuccessionType
+```{r}
+head(unique(Taxonomy$Order))
+levels(factor(tax.data2plot$Taxa))
+
+# Succ (p) variation
+tax.data2plot$taxSucc <- paste(tax.data2plot$Taxa, tax.data2plot$Succ, sep=";")
+sum.tax.taxSucc <- aggregate(tax.data2plot$Succ.Rel.Ab, by=list(taxYZ=tax.data2plot$taxSucc), FUN=sum)
+
+# get statistics per SuccessionType
+sum.tax2check <- sum.tax.taxSucc
+split <- str_split_fixed(sum.tax2check$taxYZ, ";", 2)
+sum.tax.min.max.2 <- cbind(split,sum.tax2check)
+colnames(sum.tax.min.max.2) <- c("Taxa", "YZ", "taxYZ", "rel.ab")
+sum.tax.min.max.2["Taxa"] <- lapply(sum.tax.min.max.2["Taxa"], as.factor)
+
+d7 <- data.frame(matrix(ncol = 6,nrow = 0))
+  colnames(d7) <- c("Taxa", "IP","YC", "EP_alf", "EP_con", "mOm_EP")
+for (k in 1:length(levels(sum.tax.min.max.2$Taxa))) {
+  d7[k,1] <- levels(sum.tax.min.max.2$Taxa)[[k]]
+  # d7[k,2] <- mean(sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]])
+  d7[k,2:5] <- sum.tax.min.max.2$rel.ab[sum.tax.min.max.2$Taxa == levels(sum.tax.min.max.2$Taxa)[[k]]]
+    d7[k,6] <- (d7[k,4] + d7[k,5])/2 # calc mOm = mean of means
+}
+  print(d7)
+```
+
+### 4.5 core community
+
+#### 4.5.1 OTU level - per SuccessionType
+```{r}
+# checking for shared prevalent OTUs between IP/YP/EP should take the ant species in EPs into account.
+# as EP community composition differs significantly between ant species (alf|con), there are only a few prevalent EP OTUs.
+# the idea is to calculate prevalent OTUs of EP_alf and EP_con
+# and to merge [unique(c(,))] the prevalent OTUs of EP_alf and EP_con to "EP" for comparon with IP and YP 
+
+physeq.otu4core <- physeq4norm.ansys
+sample_data(physeq.otu4core)$Succ <- gsub("0\\.","", sample_data(physeq.otu4core)$Succ)
+sample_data(physeq.otu4core)$Succ <- gsub("1\\.","", sample_data(physeq.otu4core)$Succ)
+sample_data(physeq.otu4core)$Succ <- as.factor(gsub("2\\.","", sample_data(physeq.otu4core)$Succ))
+
+venn.var <- unique(as.character(meta(physeq.otu4core)$Succ))
+print(venn.var)
+
+list_core <- c() # an empty object to store information
+
+prev <- 50 # min % of samples
+det <- 0.4 # min % per sample
+
+for (n in venn.var){ # for each variable n in SuccessionTypes
+    ps.sub <- subset_samples(physeq.otu4core, Succ == n) # Choose sample from SuccessionTypes by n
+    core_m <- core_members(ps.sub, # ps.sub is phyloseq selected with only samples from SuccessionType n 
+                           detection = det, 
+                           prevalence = prev/100)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m))) # print core taxa identified in each SuccessionTypes
+    list_core[[n]] <- core_m # add to a list core taxa for each group.
+    # print(list_core)
+}
+(abundant.otus <- unique(c(list_core[[1]], list_core[[2]], list_core[[3]], list_core[[4]])))
+df.abundant <- as.data.frame(physeq.otu4core@tax_table@.Data)[rownames(physeq.otu4core@tax_table) %in% abundant.otus,]
+df.abundant$OTU <- rownames(df.abundant)
+df.abundant$av.ab <- colSums(otu_table(physeq.otu4core)[,colnames(otu_table(physeq.otu4core)) %in% abundant.otus])/nrow(otu_table(physeq.otu4core))
+df.abundant
+(abundant.percOfTotReads <- sum(df.abundant$av.ab)) # % of total reads
+df.abundant.sort <- df.abundant[order(df.abundant$Phylum, df.abundant$Class, df.abundant$Order, df.abundant$Family, df.abundant$Genus),]
+df.abundant.sort
+```
+
+##### venn.diagram - prevalent OTUs (separated & merged EP_alf, EP_con)
+```{r}
+(p <- plot(venn(list_core),
+     fills = c(Fp="#d6e2e9", YCp="#cbf3f0", Ep="#48c9c0" ),
+     main=paste0(plottitle,"-OTUs-",det,"-", prev)))
+ggsave(p, file=paste(PLOTS_DIR,"/venn.",plottitle,".Succ.otu.",det,".",prev,".", Sys.Date(),".png",sep = ""),
+       width = 4, height = 3)
+
+# alternative way by merging EP_alf & EP_con early
+list_core$Ep <- unique(c(list_core$Ep_alf,list_core$Ep_con))
+list_core$Ep_alf <- NULL
+list_core$Ep_con <- NULL
+
+(p <- plot(venn(list_core),
+     fills = c(Fp="#d6e2e9", YCp="#cbf3f0", Ep="#48c9c0" ),
+     main=paste0(plottitle,"-OTUs-",det,"-", prev)))
+ggsave(p, file=paste(PLOTS_DIR,"/venn.",plottitle,".Succ.mergedEP.otu.",det,".",prev,".", Sys.Date(),".png",sep = ""),
+       width = 4, height = 3)
+
+(all.p <- intersect(intersect(list_core$Fp, list_core$YCp), list_core$Ep))
+FpYCp <- intersect(list_core$Fp, list_core$YCp)
+(FpYCp <- FpYCp[FpYCp %!in% all.p])
+YCpEp <- intersect(list_core$YCp, list_core$Ep)
+(YCpEp <- YCpEp[YCpEp %!in% all.p])
+FpEp <- intersect(list_core$Fp, list_core$Ep)
+(FpEp <- FpEp[FpEp %!in% all.p])
+
+(shared <- unique(c(all.p, FpYCp, YCpEp, FpEp)))
+length(shared)
+
+(EpOnly <- list_core$Ep[list_core$Ep %!in% shared])
+(YPOnly <- list_core$YCp[list_core$YCp %!in% shared])
+(FpOnly <- list_core$Fp[list_core$Fp %!in% shared])
+
+unique(df.abundant.sort$Class)
+(df.all.p <- df.abundant.sort[rownames(df.abundant.sort) %in% all.p,])
+(df.FpYCp <- df.abundant.sort[rownames(df.abundant.sort) %in% FpYCp,])
+(df.YCpEp <- df.abundant.sort[rownames(df.abundant.sort) %in% YCpEp,])
+(df.FpEp <- df.abundant.sort[rownames(df.abundant.sort) %in% FpEp,])
+(df.shared <- df.abundant.sort[rownames(df.abundant.sort) %in% shared,])
+sum(df.shared$av.ab)
+(df.Ep <- df.abundant.sort[rownames(df.abundant.sort) %in% EpOnly,])
+(df.Yp <- df.abundant.sort[rownames(df.abundant.sort) %in% YPOnly,])
+(df.Fp <- df.abundant.sort[rownames(df.abundant.sort) %in% FpOnly,])
+
+
+df.allPrevalent <- cbind(
+    "category" =  c(rep("All",nrow(df.all.p)), 
+                    rep("IP_YP",nrow(df.FpYCp)), 
+                    rep("YP_EP",nrow(df.YCpEp)), 
+                    rep("IP_EP",nrow(df.FpEp)), 
+                    rep("IP",nrow(df.Fp)), 
+                    rep("YP",nrow(df.Yp)),
+                    rep("EP",nrow(df.Ep))
+                    ),
+    rbind(df.all.p, 
+          df.FpYCp, 
+          df.YCpEp, 
+          df.FpEp, 
+          df.Fp, 
+          df.Yp, 
+          df.Ep)
+    )
+print(df.allPrevalent)
+```
+
+##### ternary.plot - prevalent OTUs
+```{r}
+physeq.otu4core.tern <- physeq.otu4core
+
+# remove 0./1./2. from column names
+sample_data(physeq.otu4core.tern)$Type <- gsub("0\\.","", sample_data(physeq.otu4core.tern)$Type)
+sample_data(physeq.otu4core.tern)$Type <- gsub("1\\.","", sample_data(physeq.otu4core.tern)$Type)
+sample_data(physeq.otu4core.tern)$Type <- as.factor(gsub("2\\.","", sample_data(physeq.otu4core.tern)$Type))
+
+# merge samples to 4 SuccTypes 
+(physeq.otu4core_Succ <- merge_samples(physeq.otu4core.tern, "Succ", fun = mean)) # merge by source
+
+rowSums(otu_table(physeq.otu4core_Succ))
+
+# calc relative abundance per SuccType
+(physeq.otu4core_Succ.rel <- transform_sample_counts(physeq.otu4core_Succ, function(x) x / sum(x) * 100 )) # rel abundance per type
+
+# replace 1,2,3 after merging with the respective Types again 
+sample_data(physeq.otu4core_Succ.rel)$Type <- rownames(sample_data(physeq.otu4core_Succ.rel))
+sample_data(physeq.otu4core_Succ.rel)$Type <- gsub("_.*","", sample_data(physeq.otu4core_Succ.rel)$Type)
+
+# mOm: mean of means... merging the average EP_alf with the average EP_con community, to not get a biased community as EP_con is overrepresented 
+(physeq.otu4core_SuccType <- merge_samples(physeq.otu4core_Succ.rel, "Type", fun = mean)) # merge by source
+# calc new relative abundance
+(physeq.otu4core_SuccType.rel <- transform_sample_counts(physeq.otu4core_SuccType, function(x) x / sum(x) * 100 )) # rel abundance per type
+
+# ternary plot of only prevalent OTUs (IP, YP, EP [EP_alf or EP_con])
+## there is no bias along different number of samples!
+
+(physeq4tern.core <-
+    subset_taxa(physeq.otu4core_SuccType.rel, rownames(tax_table(physeq.otu4core_SuccType.rel)) %in% abundant.otus))
+
+## plot abundance of total reads
+
+meandf <- as(otu_table(physeq.otu4core_SuccType.rel), "matrix")
+if (!taxa_are_rows(physeq.otu4core_SuccType.rel)) { meandf <- t(meandf) }
+abundance <- rowSums(meandf) / sum(meandf) * 100
+
+p.all.meanAb <- data.frame(
+  meandf,
+  Abundance = abundance)
+
+p.core.meanAb <- p.all.meanAb[rownames(p.all.meanAb) %in% abundant.otus,]
+
+p.core.4Ternary.totalReads <- data.frame(
+  p.core.meanAb,
+  Phylum = tax_table(physeq4tern.core)[, "Phylum"],
+  Class = tax_table(physeq4tern.core)[, "Class"],
+  Order = tax_table(physeq4tern.core)[, "Order"],
+  Genus = tax_table(physeq4tern.core)[, "Genus"],
+  OTU = paste0(rownames(tax_table(physeq4tern.core)),"_",Genus = tax_table(physeq4tern.core)[, "Genus"])
+)
+
+print(p.core.4Ternary.totalReads)
+
+## plot ternary - only abundant OTUs
+# color = Genus
+df4Ternary <- p.core.4Ternary.totalReads # p.core.4Ternary.abundantReads # p.core.4Ternary.totalReads
+p_ternary_p <-
+  ggtern(data = df4Ternary,
+         aes(
+           x = Fp,
+           y = YCp,
+           z = Ep,
+           size = Abundance,
+           colour = Genus # OTU/Genus
+         )) +
+  geom_point(alpha = 3 / 6) +
+  scale_size(
+    range = c(1, 10),
+    name = "mean rel. abundance across all types (%)"
+  ) +
+  theme_arrownormal() +
+    scale_color_manual(values = colPalette01) +
+  guides(colour = guide_legend(override.aes = list(size = 3))) +
+  ggtitle(paste0(
+    plottitle,"-",length(abundant.otus),"-OTUs-",det,"-", prev, " % of total reads ",round(abundant.percOfTotReads,2))) +
+  theme(axis.title = element_blank())
+print(p_ternary_p)
+
+ggsave(paste(PLOTS_DIR,"/ternary.",plottitle,".Succ.",length(abundant.otus),"core.otus.",det,".",prev,".genus.",
+             Sys.Date(),".pdf", sep=""),
+       useDingbats=FALSE,width = 8, height = 7, dpi = 300)
+
+# color = Order
+df4Ternary <- p.core.4Ternary.totalReads # p.core.4Ternary.abundantReads # p.core.4Ternary.totalReads
+p_ternary_p <-
+  ggtern(data = df4Ternary,
+         aes(
+           x = Fp,
+           y = YCp,
+           z = Ep,
+           size = Abundance,
+           colour = Order # Genus
+         )) +
+  geom_point(alpha = 3 / 6) +
+  scale_size(
+    range = c(1, 10),
+    name = "mean rel. abundance across all types (%)"
+  ) +
+  theme_arrownormal() +
+    scale_color_manual(values = colPalette01) +
+  guides(colour = guide_legend(override.aes = list(size = 3))) +
+  ggtitle(paste0(
+    plottitle,"-",length(abundant.otus),"-OTUs-",det,"-", prev, " % of total reads ",round(abundant.percOfTotReads,2))) +
+  theme(axis.title = element_blank())
+print(p_ternary_p)
+ggsave(paste(PLOTS_DIR,"/ternary.",plottitle,".Succ.",length(abundant.otus),"core.otus.",det,".",prev,".order.",
+             Sys.Date(),".pdf", sep=""),
+       useDingbats=FALSE,width = 8, height = 7, dpi = 300)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#
