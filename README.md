@@ -4,6 +4,9 @@ R analysis scripts studying bacterial communities in arboreal ant nests. Scripts
 # Raw sequencing data
 The raw sequencing reads and meta data are deposited in the NCBI Short Read Archive under the BioProject accession number PRJNA777006
 
+# ASV count table
+The ASV count table also includes metadata and representative sequences
+
 # Citation
 If you use part of this script, please cite:
 
