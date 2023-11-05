@@ -1,5 +1,5 @@
 # bacteria_in_arboreal_ant_nests
-R analysis scripts studying bacterial communities in arboreal ant nests. Scripts are linked to the paper titled "Highly diverse bacterial communities in arboreal ants’ nesting space develop conjoined with ant colonies"
+R analysis scripts studying bacterial communities in arboreal ant nests. Scripts are linked to the paper titled "Bacterial diversity in arboreal ant nesting spaces is linked to colony developmental stage"
 
 # Raw sequencing data
 The raw sequencing reads and meta data are deposited in the NCBI Short Read Archive under the BioProject accession number PRJNA777006
